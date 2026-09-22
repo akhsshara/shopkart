@@ -205,3 +205,20 @@ In the model's `pre('save')` hook (only when `password` is modified). Register c
 
 **Q10. How are errors kept consistent?**
 Controllers validate input with `400/401/409` JSON responses and forward unexpected errors via `next(err)` to `error.middleware.js`, which returns `{ success: false, message }` with the right status (including Mongoose `ValidationError` → `400`).
+
+## 10. Lab 03 — Product Catalog APIs
+
+MVC additions: `models/product.model.js`, `controllers/product.controller.js`, `routes/product.routes.js` (mounted at `/products` in `index.js`).
+
+| Method | Endpoint | Description |
+|---|---|---|
+| POST | `/products` | Create product → `201` |
+| GET | `/products` | List all; supports `?search=&category=&sort=price_asc\|price_desc` |
+| GET | `/products/:id` | Single product; `400` invalid id, `404` not found |
+
+- `search` = case-insensitive partial match on `name` (`$regex` + `i`).
+- `category` = exact match; combine both for AND filtering.
+- `sort=price_asc|price_desc` = bonus price sorting.
+- Validation: `price > 0`, `stock >= 0`, `name/description/category/image` required → `400`.
+
+Seed demo data: `npm run seed` (requires `MONGO_URI`). Frontend in `../frontend` (Vite, port 5173) uses these APIs; backend allows it via `cors({ origin: FRONTEND_URL, credentials: true })`.
