@@ -1,33 +1,43 @@
-// Auth middleware: protects private routes.
-// Flow: read cookie -> verify JWT -> load customer -> attach req.user.
+// Auth middleware: protects every private route.
+// Flow: read token -> verify JWT -> load customer -> attach req.user.
+//
+// The token normally arrives as the HttpOnly `token` cookie (set at login).
+// An `Authorization: Bearer <token>` header is also accepted so the same API
+// can be exercised from Postman/curl without a cookie jar.
 
 const jwt = require('jsonwebtoken');
 const Customer = require('../models/customer.model');
 
-async function protect(req, res, next) {
+async function authenticate(req, res, next) {
   try {
-    // 1. Read JWT from HttpOnly cookie (set at login)
-    const token = req.cookies && req.cookies.token;
+    let token = req.cookies && req.cookies.token;
+
     if (!token) {
-      return res.status(401).json({ success: false, message: 'Not authorized, no token' });
+      const header = req.headers.authorization;
+      if (header && header.startsWith('Bearer ')) {
+        token = header.slice(7).trim();
+      }
     }
 
-    // 2. Verify signature + expiry using the server secret
+    if (!token) {
+      return res.status(401).json({ success: false, message: 'Unauthorized' });
+    }
+
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
-    // 3. Load customer, exclude password so it never leaks downstream
+    // `-password` keeps the hash out of every downstream response by default.
     const customer = await Customer.findById(decoded.id).select('-password');
     if (!customer) {
-      return res.status(401).json({ success: false, message: 'Not authorized, customer not found' });
+      return res.status(401).json({ success: false, message: 'Unauthorized' });
     }
 
-    // 4. Attach to request for controllers (e.g. GET /me)
-    req.user = customer;
+    req.user = customer; // controllers always read the owner from here
     next();
   } catch (err) {
-    // TokenExpiredError / JsonWebTokenError both mean 401 (don't leak details)
-    return res.status(401).json({ success: false, message: 'Not authorized, invalid token' });
+    // jwt.verify throws for expired / tampered / malformed tokens. One generic
+    // message for every failure so the response cannot be used as an oracle.
+    return res.status(401).json({ success: false, message: 'Unauthorized' });
   }
 }
 
-module.exports = protect;
+module.exports = authenticate;

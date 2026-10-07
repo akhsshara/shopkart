@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { fetchProducts } from '../services/api';
+import api from '../services/api';
 import ProductCard from '../components/ProductCard';
 import SearchBar from '../components/SearchBar';
 
@@ -26,10 +26,10 @@ export default function Products() {
       if (debouncedSearch) params.search = debouncedSearch;
       if (category) params.category = category;
       if (sort) params.sort = sort;
-      const res = await fetchProducts(params);
-      setProducts(res.data.products || []);
-    } catch {
-      setError('Something went wrong while loading products.');
+      const { data } = await api.get('/products', { params });
+      setProducts(data.products ?? []);
+    } catch (err) {
+      setError(err.response?.data?.message || 'Something went wrong while loading products.');
     } finally {
       setLoading(false);
     }

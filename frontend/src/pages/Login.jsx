@@ -1,9 +1,12 @@
 import { useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
-import { loginCustomer } from '../services/api';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
+import api from '../services/api';
+import { useAuth } from '../context/AuthContext';
 
 export default function Login() {
   const navigate = useNavigate();
+  const location = useLocation();
+  const { fetchMe } = useAuth();
   const [form, setForm] = useState({ email: '', password: '' });
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
@@ -19,12 +22,18 @@ export default function Login() {
     }
     setLoading(true);
     try {
-      // Cookie is stored automatically (HttpOnly); withCredentials sends it later
-      await loginCustomer({ email: form.email.trim(), password: form.password });
-      navigate('/home');
+      // The cookie is set by the backend (HttpOnly); withCredentials sends it
+      // from now on. Login itself returns no profile data, so hydrate it.
+      await api.post('/customers/login', { email: form.email.trim(), password: form.password });
+      await fetchMe();
+      navigate(location.state?.from || '/home', { replace: true });
     } catch (err) {
       const status = err.response?.status;
-      setError(status === 401 ? 'Invalid Credentials' : err.response?.data?.message || 'Login failed');
+      setError(
+        status === 401
+          ? 'Invalid Credentials'
+          : err.response?.data?.message || 'Login failed'
+      );
     } finally {
       setLoading(false);
     }

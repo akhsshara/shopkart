@@ -222,3 +222,165 @@ MVC additions: `models/product.model.js`, `controllers/product.controller.js`, `
 - Validation: `price > 0`, `stock >= 0`, `name/description/category/image` required → `400`.
 
 Seed demo data: `npm run seed` (requires `MONGO_URI`). Frontend in `../frontend` (Vite, port 5173) uses these APIs; backend allows it via `cors({ origin: FRONTEND_URL, credentials: true })`.
+
+## 11. Lab 04 — Wishlist
+
+The wishlist lives **inside the Customer document** as an array of Product references. No second
+User model, no duplicated product objects:
+
+```js
+wishlist: { type: [{ type: ObjectId, ref: 'Product' }], default: [] }
+```
+
+| Method | Endpoint | Auth | Success | Errors |
+|---|---|---|---|---|
+| POST | `/wishlist/:productId` | Yes | `200 { success, message, count }` | `400` invalid id, `404` product not found, `409` already in wishlist |
+| GET | `/wishlist` | Yes | `200 { success, count, wishlist }` (products populated) | `401` |
+| DELETE | `/wishlist/:productId` | Yes | `200 { success, message, count }` | `400`, `404` not in wishlist |
+| PATCH | `/wishlist/:productId/toggle` | Yes | `200 { success, message, inWishlist, count }` | `400`, `404` (bonus) |
+
+Security notes:
+
+- The owner always comes from `req.user` (JWT). There is deliberately **no** `GET /wishlist/:userId`.
+- `populate()` leaves a `null` hole when a product is deleted after being saved; the array is
+  filtered so the client never has to null-check.
+
+Frontend: `hooks/useWishlistAction.js` (add/remove + local state) and `lib/wishlistSync.js`
+(read-through cache of saved ids + a pub/sub invalidation signal). That cache exists so N product
+cards do not fire N `GET /wishlist` requests. It is **not** a store — mutations only invalidate it.
+
+## 12. Lab 05 — Shopping Cart + global state
+
+The cart is stored on the Customer document as references + quantity:
+
+```js
+cart: [{ product: { type: ObjectId, ref: 'Product', required: true }, quantity: { type: Number, default: 1, min: 1 } }]
+```
+
+| Method | Endpoint | Auth | Success | Errors |
+|---|---|---|---|---|
+| POST | `/cart/:productId` | Yes | `200 { success, message: 'Cart updated', cart }` | `400` invalid id / out of stock / `Only N units available`, `404` product not found |
+| GET | `/cart` | Yes | `200 { success, count, cart }` | `401` |
+| PATCH | `/cart/:productId` | Yes | `200 { success, message: 'Cart updated', cart }` | `400` whole number / at least 1 / `Only N units available for <name>`, `404` not in cart |
+| DELETE | `/cart/:productId` | Yes | `200 { success, message: 'Product removed from cart', cart }` | `400`, `404` not in cart |
+
+Stock rules: every write re-reads the **latest** `Product.stock`. `PATCH` rejects strings, floats,
+booleans, objects, arrays and `null` with `Quantity must be a whole number` before any comparison,
+so `"3"` can never slip through as a valid quantity.
+
+Subtotal and total units are **never stored** — a persisted subtotal goes stale the moment a price
+changes. They are derived on the client and recomputed on the server at checkout.
+
+### One shared cart store
+
+`frontend/src/context/CartContext.jsx` is the single source of truth. The Navbar badge, the Cart
+page and every "Add to Cart" button read it; nothing fetches `/cart` on its own, so the badge can
+never disagree with the page.
+
+```
+cartItems, loading, error, setError,
+pendingIds, isPending(id),
+refreshCart, addToCart, updateQuantity, removeFromCart, clearCart,
+isInCart, quantityOf, subtotal, totalUnits
+```
+
+`totalUnits` is the sum of quantities, so `Keyboard x2 + Mouse x1` shows **Cart (3)**.
+
+Because the cart lives in MongoDB, it survives a page refresh and a logout/login cycle. `clearCart()`
+is called after a *verified* payment so the badge drops to Cart (0) with no page refresh.
+
+## 13. Lab 06 — Checkout, Orders & Razorpay (test mode)
+
+### Order model
+
+`models/order.model.js` snapshots `name`, `price` and `image` per item next to the live `product`
+reference. A Keyboard bought at 2999 still shows 2999 after the price changes to 999999 — an order
+is a historical record, while a cart always resolves live data.
+
+`status`: `PENDING_PAYMENT → PLACED → CONFIRMED → SHIPPED → DELIVERED`
+`paymentStatus`: `PENDING → PAID | FAILED` (plus `failureReason` for diagnostics).
+
+### Endpoints
+
+| Method | Endpoint | Auth | Notes |
+|---|---|---|---|
+| POST | `/orders/create-payment-order` | Yes | Body may contain **only** `shippingAddress` |
+| POST | `/orders/verify-payment` | Yes | HMAC signature verification |
+| GET | `/orders` | Yes | Own orders, newest first |
+| GET | `/orders/:id` | Yes | `404` for anyone else's order |
+| PATCH | `/orders/:id/status` | Yes | Bonus, dev only — `403` when `NODE_ENV=production` |
+
+`POST /orders/create-payment-order` returns `200`:
+
+```json
+{
+  "success": true,
+  "message": "Payment order created",
+  "shopKartOrderId": "…",
+  "razorpayOrderId": "order_…",
+  "amount": 629700,
+  "currency": "INR",
+  "totalAmount": 6297,
+  "key": "rzp_test_…"
+}
+```
+
+Order of operations: validate address → reload the cart from MongoDB → reload the LATEST products →
+re-check stock → compute the total **on the server** → snapshot into an Order → create the Razorpay
+order (amount in paise) → store `razorpayOrderId`. A `totalAmount`, `items` or `user` sent by the
+browser is ignored, and the cart is **not** cleared. An existing `PENDING` / `PENDING_PAYMENT` order
+is reused so a retry does not litter the orders history. The Razorpay call happens before the save,
+so a Razorpay outage leaves no half-written order.
+
+`POST /orders/verify-payment` is the only place the cart is emptied:
+
+1. reject missing fields → `400 Missing payment verification details`
+2. `Order.findOne({ _id, user: req.user._id })` — ownership is part of the query, so another user's
+   order is simply not found (`404`), never confirmed
+3. compare the stored `razorpayOrderId` with the request → `400 Payment does not match this order`
+4. `HMAC-SHA256("${storedRazorpayOrderId}|${razorpay_payment_id}", RAZORPAY_KEY_SECRET)` compared
+   with `crypto.timingSafeEqual` → `400 Invalid payment signature` (also records `failureReason`)
+5. only then `paymentStatus = 'PAID'`, `status = 'PLACED'`, store the payment id, clear the cart
+
+A `paymentSuccess: true` boolean from the browser is **never** trusted. Re-verifying an already-paid
+order returns `200 Payment already verified` (idempotent, so a retry cannot double-clear the cart).
+
+### CORS
+
+`FRONTEND_URL` (comma-separated) sets the allowed origins; with no value the allow-list is
+`http://localhost:5173`, `http://localhost:5199`, `http://localhost:3000`. `credentials: true` is
+required for the cookie. Note: a request from a non-listed origin still reaches the server and still
+returns `200` JSON — the browser just withholds the body from JS, so axios rejects with a bare
+"Network Error" while DevTools shows a healthy request.
+
+## 14. Environment variables
+
+```
+PORT=5000
+MONGO_URI=…
+JWT_SECRET=…
+NODE_ENV=development
+FRONTEND_URL=http://localhost:5173          # optional, comma-separated
+RAZORPAY_KEY_ID=rzp_test_xxxxxxxx           # Lab 06 - TEST mode
+RAZORPAY_KEY_SECRET=…                        # Lab 06 - backend only, never sent to React
+```
+
+- Never hardcode `MONGO_URI`, `JWT_SECRET` or `RAZORPAY_KEY_SECRET`; never commit `.env`.
+- `RAZORPAY_KEY_SECRET` is used for exactly two things: the Razorpay SDK and the HMAC signature.
+  Only `RAZORPAY_KEY_ID` (which is public) reaches the browser.
+- Use **Test Mode** keys from the Razorpay dashboard. With no keys configured, the rest of the API
+  keeps working and only `POST /orders/create-payment-order` fails with a clear message.
+
+## 15. Tests
+
+```bash
+npm run test:api
+```
+
+`tests/api.test.js` boots the real server on port 5051 and drives it over HTTP with a cookie jar,
+covering Labs 01–06: registration/login/profile/logout, product search/filter/sort, wishlist
+duplicates and isolation between customers, every invalid-quantity shape, stock ceilings, server-owned
+pricing (forged `totalAmount`/items ignored), paise conversion, signature verification (forged,
+mismatched, swapped ids), cart-clearing timing, order ownership and status progression. The outbound
+Razorpay API call is stubbed through the test seam in `config/razorpay.js`, so the suite needs no live
+credentials; the HMAC verification itself runs for real.

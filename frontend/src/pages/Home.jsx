@@ -1,41 +1,44 @@
-import { useEffect, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
-import { fetchProfile } from '../services/api';
+import { Link } from 'react-router-dom';
+import { useAuth } from '../context/AuthContext';
+import { useCart } from '../context/CartContext';
 
-// Protected: fetches GET /customers/me; redirects to /login if 401.
+// /home is wrapped in <ProtectedRoute> in App.jsx, and the profile comes from
+// AuthContext (which already ran GET /customers/me), so this page does not fetch
+// the customer a second time.
 export default function Home() {
-  const navigate = useNavigate();
-  const [user, setUser] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const { user } = useAuth();
+  const { totalUnits } = useCart();
 
-  useEffect(() => {
-    let active = true;
-    (async () => {
-      try {
-        const res = await fetchProfile();
-        if (active) setUser(res.data);
-      } catch {
-        navigate('/login'); // not logged in -> redirect
-      } finally {
-        if (active) setLoading(false);
-      }
-    })();
-    return () => {
-      active = false;
-    };
-  }, [navigate]);
-
-  if (loading) return <div className="page"><p>Loading profile...</p></div>;
   if (!user) return null;
 
   return (
     <div className="page">
       <div className="form wide">
         <h2>Welcome, {user.fullName}!</h2>
-        <p><strong>Name:</strong> {user.fullName}</p>
-        <p><strong>Email:</strong> {user.email}</p>
-        <p><strong>Phone:</strong> {user.phone}</p>
-        <Link className="btn" to="/products">Browse Products</Link>
+        <p>
+          <strong>Name:</strong> {user.fullName}
+        </p>
+        <p>
+          <strong>Email:</strong> {user.email}
+        </p>
+        <p>
+          <strong>Phone:</strong> {user.phone}
+        </p>
+
+        <div className="actions-row">
+          <Link className="btn" to="/products">
+            Browse Products
+          </Link>
+          <Link className="btn btn-outline-dark" to="/cart">
+            Cart ({totalUnits})
+          </Link>
+          <Link className="btn btn-outline-dark" to="/wishlist">
+            Wishlist
+          </Link>
+          <Link className="btn btn-outline-dark" to="/orders">
+            My Orders
+          </Link>
+        </div>
       </div>
     </div>
   );

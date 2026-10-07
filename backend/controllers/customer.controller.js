@@ -10,6 +10,14 @@ function isValidEmail(email) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 }
 
+// Strip the password before a customer document is ever serialized.
+function toSafeCustomer(customerDoc) {
+  const obj =
+    typeof customerDoc.toObject === 'function' ? customerDoc.toObject() : { ...customerDoc };
+  delete obj.password;
+  return obj;
+}
+
 // POST /customers/register
 async function registerCustomer(req, res, next) {
   try {
@@ -44,12 +52,7 @@ async function registerCustomer(req, res, next) {
     res.status(201).json({
       success: true,
       message: 'Customer registered successfully',
-      customer: {
-        _id: customer._id,
-        fullName: customer.fullName,
-        email: customer.email,
-        phone: customer.phone,
-      },
+      customer: toSafeCustomer(customer),
     });
   } catch (err) {
     next(err); // -> centralized error.middleware.js
@@ -80,33 +83,30 @@ async function loginCustomer(req, res, next) {
       return res.status(401).json({ success: false, message: 'Invalid email or password' });
     }
 
-    // Create JWT + set HttpOnly cookie
-    generateToken(res, customer._id);
+    // Sign the JWT and store it in an HttpOnly cookie.
+    const token = generateToken(customer);
 
-    res.status(200).json({
-      success: true,
-      message: 'Logged in successfully',
-      customer: {
-        _id: customer._id,
-        fullName: customer.fullName,
-        email: customer.email,
-        phone: customer.phone,
-      },
+    const isProduction = process.env.NODE_ENV === 'production';
+    res.cookie('token', token, {
+      httpOnly: true, // JS in the browser cannot read it -> protects from XSS theft
+      secure: isProduction, // send cookie only over HTTPS in production
+      sameSite: 'strict', // blocks cross-site cookie sending -> protects from CSRF
+      maxAge: 24 * 60 * 60 * 1000, // 1 day, matches the JWT expiry
     });
+
+    // The customer object is deliberately NOT echoed here: the client hydrates
+    // the profile from GET /customers/me, so login has no data-leak surface.
+    res.status(200).json({ success: true, message: 'Login successful' });
   } catch (err) {
     next(err);
   }
 }
 
 // GET /customers/me (protected)
+// req.user was set by auth.middleware (password excluded there, and stripped
+// again here so the response can never carry the hash).
 async function getProfile(req, res) {
-  // req.user was set by auth.middleware (password already excluded)
-  res.status(200).json({
-    _id: req.user._id,
-    fullName: req.user.fullName,
-    email: req.user.email,
-    phone: req.user.phone,
-  });
+  res.status(200).json(toSafeCustomer(req.user));
 }
 
 // POST /customers/logout

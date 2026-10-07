@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { registerCustomer } from '../services/api';
+import api, { getApiErrorMessage } from '../services/api';
 
 export default function Register() {
   const navigate = useNavigate();
@@ -29,7 +29,7 @@ export default function Register() {
     }
     setLoading(true);
     try {
-      await registerCustomer({
+      await api.post('/customers/register', {
         fullName: form.fullName.trim(),
         email: form.email.trim(),
         password: form.password,
@@ -37,7 +37,7 @@ export default function Register() {
       });
       navigate('/login'); // success -> login
     } catch (err) {
-      setError(err.response?.data?.message || 'Registration failed');
+      setError(getApiErrorMessage(err, 'Registration failed'));
     } finally {
       setLoading(false);
     }
