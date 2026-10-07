@@ -1,3 +1,10 @@
+const dns = require('dns');
+try {
+  dns.setServers(['8.8.8.8', '1.1.1.1']);
+} catch (e) {
+  // Ignore fallback error
+}
+
 // Seed demo products (Lab 03 data for Lab 04-06 too).
 // Run with: npm run seed
 //
@@ -103,7 +110,7 @@ const demoProducts = [
 async function seed() {
   try {
     if (!process.env.MONGO_URI) throw new Error('MONGO_URI is missing in .env file');
-    await mongoose.connect(process.env.MONGO_URI);
+    await mongoose.connect(process.env.MONGO_URI.trim());
 
     let created = 0;
     let updated = 0;

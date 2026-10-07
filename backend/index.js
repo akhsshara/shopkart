@@ -1,3 +1,10 @@
+const dns = require('dns');
+try {
+  dns.setServers(['8.8.8.8', '1.1.1.1']);
+} catch (e) {
+  // Ignore fallback error
+}
+
 // ShopKart Secure - entry point
 // Loads env vars, connects MongoDB, mounts routes, handles errors.
 
@@ -79,7 +86,7 @@ async function startServer() {
       throw new Error('JWT_SECRET is missing in .env file');
     }
 
-    await mongoose.connect(process.env.MONGO_URI);
+    await mongoose.connect(process.env.MONGO_URI.trim());
     console.log('MongoDB connected');
 
     app.listen(PORT, () => {
