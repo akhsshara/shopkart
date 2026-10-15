@@ -30,3 +30,11 @@
     "razorpay": "^2.9.8"
   }
 }
+
+
+
+{
+  "scripts": {
+    "start": "node server.js"
+  }
+}
