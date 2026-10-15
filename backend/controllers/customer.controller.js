@@ -1,21 +1,34 @@
-// Customer controllers (business logic for each endpoint).
-// Routes only map URLs -> these functions (MVC separation).
-
 const bcrypt = require('bcrypt');
 const Customer = require('../models/customer.model');
 const generateToken = require('../utils/generateToken');
 
-// Simple email format check (Mongoose also trims/lowercases)
+// Validate email format
 function isValidEmail(email) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 }
 
-// Strip the password before a customer document is ever serialized.
+// Remove password before returning customer data
 function toSafeCustomer(customerDoc) {
   const obj =
-    typeof customerDoc.toObject === 'function' ? customerDoc.toObject() : { ...customerDoc };
+    typeof customerDoc.toObject === 'function'
+      ? customerDoc.toObject()
+      : { ...customerDoc };
+
   delete obj.password;
   return obj;
+}
+
+// Cookie settings shared by login and logout
+function getCookieOptions() {
+  const isProduction = process.env.NODE_ENV === 'production';
+
+  return {
+    httpOnly: true,
+    secure: isProduction,
+    sameSite: isProduction ? 'none' : 'lax',
+    path: '/',
+    maxAge: 24 * 60 * 60 * 1000,
+  };
 }
 
 // POST /customers/register
@@ -23,39 +36,54 @@ async function registerCustomer(req, res, next) {
   try {
     let { fullName, email, password, phone } = req.body;
 
-    // Trim + normalize (email lowercase) so " John@Gmail.com " works cleanly
     fullName = typeof fullName === 'string' ? fullName.trim() : fullName;
     email = typeof email === 'string' ? email.trim().toLowerCase() : email;
     phone = typeof phone === 'string' ? phone.trim() : phone;
 
-    // 1. Validate all fields
     if (!fullName || !email || !password || !phone) {
-      return res.status(400).json({ success: false, message: 'All fields are required' });
+      return res.status(400).json({
+        success: false,
+        message: 'All fields are required',
+      });
     }
+
     if (!isValidEmail(email)) {
-      return res.status(400).json({ success: false, message: 'Invalid email format' });
-    }
-    if (password.length < 6) {
-      return res.status(400).json({ success: false, message: 'Password must be at least 6 characters' });
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid email format',
+      });
     }
 
-    // 2. Email must be unique -> 409 Conflict
+    if (typeof password !== 'string' || password.length < 6) {
+      return res.status(400).json({
+        success: false,
+        message: 'Password must be at least 6 characters',
+      });
+    }
+
     const existing = await Customer.findOne({ email });
+
     if (existing) {
-      return res.status(409).json({ success: false, message: 'Email already registered' });
+      return res.status(409).json({
+        success: false,
+        message: 'Email already registered',
+      });
     }
 
-    // 3. Save (password is hashed by pre('save') hook in the model - never plaintext)
-    const customer = await Customer.create({ fullName, email, password, phone });
+    const customer = await Customer.create({
+      fullName,
+      email,
+      password,
+      phone,
+    });
 
-    // 4. Respond WITHOUT password
-    res.status(201).json({
+    return res.status(201).json({
       success: true,
       message: 'Customer registered successfully',
       customer: toSafeCustomer(customer),
     });
   } catch (err) {
-    next(err); // -> centralized error.middleware.js
+    next(err);
   }
 }
 
@@ -66,89 +94,113 @@ async function loginCustomer(req, res, next) {
 
     email = typeof email === 'string' ? email.trim().toLowerCase() : email;
 
-    if (!email || !password) {
-      return res.status(400).json({ success: false, message: 'Email and password are required' });
+    if (!email || typeof password !== 'string' || !password) {
+      return res.status(400).json({
+        success: false,
+        message: 'Email and password are required',
+      });
     }
 
-    // Find by normalized email
     const customer = await Customer.findOne({ email });
-    // Generic message: do NOT reveal whether email or password was wrong
-    // (prevents attackers from discovering which emails are registered)
+
     if (!customer) {
-      return res.status(401).json({ success: false, message: 'Invalid email or password' });
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid email or password',
+      });
     }
 
     const isMatch = await bcrypt.compare(password, customer.password);
+
     if (!isMatch) {
-      return res.status(401).json({ success: false, message: 'Invalid email or password' });
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid email or password',
+      });
     }
 
-    // Sign the JWT and store it in an HttpOnly cookie.
     const token = generateToken(customer);
 
-    const isProduction = process.env.NODE_ENV === 'production';
-    res.cookie('token', token, {
-      httpOnly: true, // JS in the browser cannot read it -> protects from XSS theft
-      secure: isProduction, // send cookie only over HTTPS in production
-      sameSite: 'strict', // blocks cross-site cookie sending -> protects from CSRF
-      maxAge: 24 * 60 * 60 * 1000, // 1 day, matches the JWT expiry
-    });
+    res.cookie('token', token, getCookieOptions());
 
-    // The customer object is deliberately NOT echoed here: the client hydrates
-    // the profile from GET /customers/me, so login has no data-leak surface.
-    res.status(200).json({ success: true, message: 'Login successful' });
+    return res.status(200).json({
+      success: true,
+      message: 'Login successful',
+      customer: toSafeCustomer(customer),
+    });
   } catch (err) {
     next(err);
   }
 }
 
 // GET /customers/me (protected)
-// req.user was set by auth.middleware (password excluded there, and stripped
-// again here so the response can never carry the hash).
 async function getProfile(req, res) {
-  res.status(200).json(toSafeCustomer(req.user));
+  return res.status(200).json(toSafeCustomer(req.user));
 }
 
 // POST /customers/logout
 async function logoutCustomer(req, res) {
-  const isProduction = process.env.NODE_ENV === 'production';
-  // Must use same flags as login so the browser matches and deletes the cookie
-  res.clearCookie('token', {
-    httpOnly: true,
-    secure: isProduction,
-    sameSite: 'strict',
+  const options = getCookieOptions();
+  delete options.maxAge;
+
+  res.clearCookie('token', options);
+
+  return res.status(200).json({
+    success: true,
+    message: 'Logged out successfully',
   });
-  res.status(200).json({ success: true, message: 'Logged out successfully' });
 }
 
-// PATCH /customers/change-password (protected, bonus)
+// PATCH /customers/change-password (protected)
 async function changePassword(req, res, next) {
   try {
     const { oldPassword, newPassword } = req.body;
 
     if (!oldPassword || !newPassword) {
-      return res.status(400).json({ success: false, message: 'Old and new passwords are required' });
-    }
-    if (newPassword.length < 6) {
-      return res.status(400).json({ success: false, message: 'New password must be at least 6 characters' });
+      return res.status(400).json({
+        success: false,
+        message: 'Old and new passwords are required',
+      });
     }
 
-    // Need the hash, but auth.middleware excluded it -> fetch again
+    if (
+      typeof newPassword !== 'string' ||
+      newPassword.length < 6
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: 'New password must be at least 6 characters',
+      });
+    }
+
     const customer = await Customer.findById(req.user._id);
+
     if (!customer) {
-      return res.status(404).json({ success: false, message: 'Customer not found' });
+      return res.status(404).json({
+        success: false,
+        message: 'Customer not found',
+      });
     }
 
-    const isMatch = await bcrypt.compare(oldPassword, customer.password);
+    const isMatch = await bcrypt.compare(
+      oldPassword,
+      customer.password
+    );
+
     if (!isMatch) {
-      return res.status(401).json({ success: false, message: 'Old password is incorrect' });
+      return res.status(401).json({
+        success: false,
+        message: 'Old password is incorrect',
+      });
     }
 
-    // Assign plaintext; pre('save') hook hashes it before writing to MongoDB
     customer.password = newPassword;
     await customer.save();
 
-    res.status(200).json({ success: true, message: 'Password changed successfully' });
+    return res.status(200).json({
+      success: true,
+      message: 'Password changed successfully',
+    });
   } catch (err) {
     next(err);
   }
