@@ -11,8 +11,8 @@
   },
   "keywords": [
     "express",
-    "mongodb",
     "mongoose",
+    "mongodb",
     "bcrypt",
     "jwt",
     "auth"
@@ -28,13 +28,5 @@
     "jsonwebtoken": "^9.0.2",
     "mongoose": "^8.4.0",
     "razorpay": "^2.9.8"
-  }
-}
-
-
-
-{
-  "scripts": {
-    "start": "node server.js"
   }
 }
